@@ -1538,7 +1538,7 @@ class StructuredCodeGenerator(Analysis):
         if isinstance(expr, CBinaryOp):
             if expr.op == "And" and isinstance(expr.rhs, CConstant) and is_alignment_mask(expr.rhs.value):
                 # alignment - ignore it
-                expr = expr.lhs
+                return self._parse_load_addr(expr.lhs)
             if expr.op in ("Add", "Sub"):
                 lhs, rhs = expr.lhs, expr.rhs
                 if isinstance(lhs, CConstant):
@@ -1911,13 +1911,13 @@ class StructuredCodeGenerator(Analysis):
 
     def _handle_Expr_Convert(self, expr):
 
-        if expr.to_bits == 64:
+        if 64 >= expr.to_bits > 32:
             dst_type = SimTypeLongLong()
-        elif expr.to_bits == 32:
+        elif 32 >= expr.to_bits > 16:
             dst_type = SimTypeInt()
-        elif expr.to_bits == 16:
+        elif 16 >= expr.to_bits > 8:
             dst_type = SimTypeShort()
-        elif expr.to_bits == 8:
+        elif 8 >= expr.to_bits > 1:
             dst_type = SimTypeChar()
         elif expr.to_bits == 1:
             dst_type = SimTypeChar()  # FIXME: Add a SimTypeBit?

@@ -7,7 +7,7 @@ import angr
 
 from common import bin_location, do_trace, load_cgc_pov, slow_test
 
-def tracer_cgc(filename, test_name, stdin, copy_states=False):
+def tracer_cgc(filename, test_name, stdin, copy_states=False, follow_unsat=False):
     p = angr.Project(filename)
     p.simos.syscall_library.update(angr.SIM_LIBRARIES['cgcabi_tracer'])
 
@@ -16,7 +16,8 @@ def tracer_cgc(filename, test_name, stdin, copy_states=False):
     s.preconstrainer.preconstrain_file(stdin, s.posix.stdin, True)
 
     simgr = p.factory.simulation_manager(s, hierarchy=False, save_unconstrained=crash_mode)
-    t = angr.exploration_techniques.Tracer(trace, crash_addr=crash_addr, keep_predecessors=1, copy_states=copy_states)
+    t = angr.exploration_techniques.Tracer(trace, crash_addr=crash_addr, keep_predecessors=1, copy_states=copy_states,
+                                           follow_unsat=follow_unsat)
     simgr.use_technique(t)
     simgr.use_technique(angr.exploration_techniques.Oppologist())
 
@@ -181,6 +182,29 @@ def test_fauxware():
 
     nose.tools.assert_true('traced' in simgr.stashes)
 
+def test_rollback_on_symbolic_conditional_exit():
+    # Test if state is correctly rolled back to before start of block in case block cannot be executed in unicorn engine
+    # because exit condition is symbolic
+    binary = os.path.join(bin_location, "tests", "cgc", "CROMU_00043")
+    pov_file = os.path.join(bin_location, "tests_data", "cgc_povs", "CROMU_00043_POV_00000.xml")
+    output_initial_bytes = [b"Network type: Broadcast", b"Source Address: 0x962B175B", b"Network type: Endpoint",
+                            b"Source Address: 0x321B00B0", b"Destination Address: 0xACF70019", b"Final Statistics:",
+                            b"\tTotal Packets: 6", b"\tStart Time: 0x5552C470", b"\tEnd Time: 0x54CAF0B0",
+                            b"\tLargest Packet: 0", b"\tSmallest Packet: 0", b"\tNumber of malformed packets: 0",
+                            b"\tNumber of packets shown 6", b"Option Headers:",
+                            b"This content has not been modified from the original",
+                            b"Capturing Authority: Network Provider", b"Capture Date: bKQcAXJJEqCSPmrIlRy",
+                            b"Capturing Authority: Employer\n"]
+    trace_cgc_with_pov_file(binary, "tracer_rollback_on_symbolic_conditional_exit", pov_file, b'\n'.join(output_initial_bytes))
+
+def test_floating_point_memory_reads():
+    # Test float point memory reads in which bytes longer than architecture width are read in a single memory read hook
+    # in unicorn. The other related case is when such reads are split across multiple reads. This is tested in
+    # b01lersctf2020 little engine solver
+    binary = os.path.join(bin_location, "tests", "cgc", "NRFIN_00027")
+    pov_file = os.path.join(bin_location, "tests_data", "cgc_povs", "NRFIN_00027_POV_00000.xml")
+    output = b'\x00' * 36
+    trace_cgc_with_pov_file(binary, "tracer_floating_point_memory_reads", pov_file, output)
 
 def test_skip_some_symbolic_memory_writes():
     # Test symbolic memory write skipping in SimEngineUnicorn during tracing
@@ -234,6 +258,14 @@ def test_symbolic_memory_dependencies_liveness():
                             b"> Enter search express (firstname or fn, lastname or ln, username or un, birthdate or bd,"
                             b" operators ==, !=, >, <, AND and OR):\n")
     trace_cgc_with_pov_file(binary, "tracer_symbolic_memory_dependencies_liveness", pov_file, output_initial_bytes)
+
+
+def test_user_controlled_code_execution():
+    # Test user controlled code execution where instruction pointer is concrete and code is symbolic
+    binary = os.path.join(bin_location, "tests", "cgc", "NRFIN_00034")
+    pov_file = os.path.join(bin_location, "tests_data", "cgc_povs", "NRFIN_00034_POV_00000.xml")
+    output_initial_bytes = b"\x00" * 8
+    trace_cgc_with_pov_file(binary, "tracer_user_controlled_code_execution", pov_file, output_initial_bytes)
 
 
 def run_all():

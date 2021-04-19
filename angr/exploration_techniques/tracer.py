@@ -137,6 +137,8 @@ class Tracer(ExplorationTechnique):
     :param mode:                Tracing mode.
     :param aslr:                Whether there are aslr slides. if not, tracer uses trace address
                                 as state address.
+    :param follow_unsat:        Whether unsatisfiable states should be treated as potential
+                                successors or not.
 
     :ivar predecessors:         A list of states in the history before the final state.
     """
@@ -149,7 +151,8 @@ class Tracer(ExplorationTechnique):
             copy_states=False,
             fast_forward_to_entry=True,
             mode=TracingMode.Strict,
-            aslr=True):
+            aslr=True,
+            follow_unsat=False):
         super().__init__()
         self._trace = trace
         self._resiliency = resiliency
@@ -157,6 +160,7 @@ class Tracer(ExplorationTechnique):
         self._copy_states = copy_states
         self._mode = mode
         self._aslr = aslr
+        self._follow_unsat = follow_unsat
         self._fast_forward_to_entry = fast_forward_to_entry
 
         self._aslr_slides = {}  # type: Dict[cle.Backend, int]
@@ -339,8 +343,8 @@ class Tracer(ExplorationTechnique):
         sat_succs = succs_dict[None]  # satisfiable states
         succs = sat_succs + succs_dict['unsat']  # both satisfiable and unsatisfiable states
 
-        if self._mode == TracingMode.Permissive:
-            # permissive mode
+        if not self._follow_unsat:
+            # Only satisfiable states need to be checked for correct successor
             if len(sat_succs) == 1:
                 try:
                     self._update_state_tracking(sat_succs[0])
@@ -356,7 +360,7 @@ class Tracer(ExplorationTechnique):
                 succs_dict[None] = [succ]
                 succs_dict['missed'] = [s for s in sat_succs if s is not succ]
         else:
-            # strict mode
+            # Check all states for correct successor
             if len(succs) == 1:
                 self._update_state_tracking(succs[0])
             elif len(succs) == 0:
@@ -473,14 +477,22 @@ class Tracer(ExplorationTechnique):
             if sync is not None:
                 raise Exception("TODO")
 
-            for addr in state.history.recent_bbl_addrs:
+            for addr_idx, addr in enumerate(state.history.recent_bbl_addrs):
                 if addr == state.unicorn.transmit_addr:
                     continue
 
 
-                if self._compare_addr(self._trace[idx], addr) or self._check_qemu_unicorn_desync(state, idx, addr):
+                if self._compare_addr(self._trace[idx], addr) or self._check_qemu_unicorn_large_block_split(state, idx, addr_idx):
                     idx += 1
                 else:
+                    is_contained, increment = self._check_qemu_block_in_unicorn_block(state, idx, addr_idx)
+                    if is_contained:
+                        idx += increment
+                        # Big block is now skipped in qemu trace. Perform compare at correct index again.
+                        if self._compare_addr(self._trace[idx], addr):
+                            idx += 1
+                            continue
+
                     raise TracerDesyncError('Oops! angr did not follow the trace',
                                             deviating_addr=addr,
                                             deviating_trace_idx=idx)
@@ -605,7 +617,41 @@ class Tracer(ExplorationTechnique):
         else:
             raise AngrTracerError("Trace desynced on jumping into %#x, where no library is mapped!" % state_addr)
 
-    def _check_qemu_unicorn_desync(self, state: 'angr.SimState', trace_curr_idx, state_desync_block_addr):
+    def _check_qemu_block_in_unicorn_block(self, state: 'angr.SimState', trace_curr_idx, state_desync_block_idx):
+        """
+        Check if desync occurred because unicorn block was split into multiple blocks in qemu tracer. If yes, find the
+        correct increment for trace index
+        """
+
+        # We first find the block address where the trace and state's history match
+        for trace_match_idx in range(trace_curr_idx - 1, -1, -1):
+            if self._trace[trace_match_idx] == state.history.recent_bbl_addrs[state_desync_block_idx - 1]:
+                break
+        else:
+            # Failed to find matching block address. qemu block is probably not contained in a previous block.
+            return (False, -1)
+
+        big_block_start = self._trace[trace_match_idx]
+        big_block = state.project.factory.block(self._translate_trace_addr(big_block_start))
+        big_block_end = big_block_start + big_block.size - 1
+        for last_contain_index in range(trace_match_idx, trace_curr_idx + 1):
+            if self._trace[last_contain_index] < big_block_start or self._trace[last_contain_index] > big_block_end:
+                # This qemu block is not contained in the bigger block
+                break
+
+        if last_contain_index != trace_curr_idx:
+            # Current block in trace is not in the big block
+            return (False, -1)
+
+        # Check for future blocks in trace contained in big block
+        for next_contain_index in range(trace_curr_idx + 1, len(self._trace)):
+            if self._trace[next_contain_index] < big_block_start or self._trace[next_contain_index] > big_block_end:
+                # This qemu block is not contained in bigger block
+                break
+
+        return (True, next_contain_index - trace_curr_idx)
+
+    def _check_qemu_unicorn_large_block_split(self, state: 'angr.SimState', trace_curr_idx, state_desync_block_idx):
         """
         Check if desync occurred because large blocks are split up at different instructions by qemu and unicorn. This
         is done by reconstructing part of block executed so far from the trace and state history and checking if they
@@ -617,7 +663,7 @@ class Tracer(ExplorationTechnique):
         prev_trace_block = state.project.factory.block(self._translate_trace_addr(self._trace[trace_curr_idx - 1]))
         for insn_type in control_flow_insn_types:
             if prev_trace_block.capstone.insns[-1].group(insn_type):
-                # Previous block ends in a control flow instruction. It is a trace desync.
+                # Previous block ends in a control flow instruction. It is not large block different split.
                 return False
 
         # The previous block did not end in a control flow instruction. Let's find the start of this big block from
@@ -640,17 +686,7 @@ class Tracer(ExplorationTechnique):
         # Now we check the part of the state history corresponding to this big basic block to ensure there are no
         # control flow instructions at end of any blocks in the part. This check moves backwards starting from the
         # desyncing block to the start of the big block we found earlier
-        state_history_desync_block_found = False
-        for state_history_block_addr in reversed(state.history.bbl_addrs):
-            if not state_history_desync_block_found:
-                if state_history_block_addr == state_desync_block_addr:
-                    # Found the desync block in state history
-                    state_history_desync_block_found = True
-
-                # Either we haven't found the desync block in state history or we just found it. Since we want to check
-                # for control flow instructions from only from block before the desync block, we can continue here
-                continue
-
+        for state_history_block_addr in reversed(state.history.recent_bbl_addrs[:state_desync_block_idx]):
             state_history_block = state.project.factory.block(state_history_block_addr)
             state_history_block_last_insn = state_history_block.capstone.insns[-1]
             for insn_type in control_flow_insn_types:
@@ -660,14 +696,9 @@ class Tracer(ExplorationTechnique):
                     return False
 
             if state_history_block_addr == big_block_start_addr:
-                if not state_history_desync_block_found:
-                    # We somehow found the start of the big block in the state history but not the block where the
-                    # desync error happened. Something is seriously wrong!
-                    return False
-                else:
-                    # We found start of the big block and no control flow statements in between that and the block where
-                    # desync happend. All good.
-                    break
+                # We found start of the big block and no control flow statements in between that and the block where
+                # desync happend.
+                break
 
         # Let's find the address of the last bytes of the big basic block from the trace
         big_block_end_addr = None
@@ -687,9 +718,9 @@ class Tracer(ExplorationTechnique):
         # - There is no control flow instruction between big_block_start_addr and big_block_end_addr
         # - There is no control flow instruction between big_block_start_addr and state_desync_block_addr
         # - state_desync_block_addr is definitely executed after big_block_start_addr
-        # So it's enough to check if state_desync_block_addr is less than big_block_end_addr to ensure that it
+        # So it's enough to check if desyncing block's address is less than big_block_end_addr to ensure that it
         # is part of the big block
-        return state_desync_block_addr < big_block_end_addr
+        return state.history.recent_bbl_addrs[state_desync_block_idx] < big_block_end_addr
 
     def _analyze_misfollow(self, state, idx):
         angr_addr = state.addr
@@ -805,7 +836,7 @@ class Tracer(ExplorationTechnique):
         # first check: are we just executing user-controlled code?
         if not state.ip.symbolic and state.mem[state.ip].char.resolved.symbolic:
             l.debug("executing input-related code")
-            return state
+            return state, state
 
         state = state.copy()
         state.options.add(sim_options.COPY_STATES)
