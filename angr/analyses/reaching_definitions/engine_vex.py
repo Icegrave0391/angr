@@ -10,7 +10,7 @@ from ...calling_conventions import DEFAULT_CC, SimRegArg, SimStackArg, SimCC
 from ...utils.constants import DEFAULT_STATEMENT
 from ...knowledge_plugins.key_definitions.definition import Definition
 from ...knowledge_plugins.key_definitions.tag import LocalVariableTag, ParameterTag, ReturnValueTag, Tag
-from ...knowledge_plugins.key_definitions.atoms import Atom, Register, MemoryLocation, Tmp
+from ...knowledge_plugins.key_definitions.atoms import Atom, Register, MemoryLocation, Parameter, Tmp
 from ...knowledge_plugins.key_definitions.constants import OP_BEFORE, OP_AFTER
 from ...knowledge_plugins.key_definitions.dataset import DataSet
 from ...knowledge_plugins.key_definitions.heap_address import HeapAddress
@@ -76,6 +76,25 @@ class SimEngineRDVEX(
                     # yes it's a jump to a function
                     self._handle_function(addr)
 
+        # add by myself
+        elif self.block.vex.jumpkind == "Ijk_Ret":
+            """debug"""
+            addr = self._expr(self.block.vex.next)
+            assert len(addr) == 1
+            addr_int = next(iter(addr.data))
+            defs_sp = self.state.register_definitions.get_objects_by_offset(self.project.arch.sp_offset)
+            assert len(defs_sp) == 1
+            sp_data = next(iter(defs_sp)).data.data
+            assert len(sp_data) == 1
+            sp_addr = next(iter(sp_data))
+            if isinstance(sp_addr, (int, SpOffset)):
+                if isinstance(addr_int, Undefined):
+                    l.critical(f"[STACK DBG] return to {addr_int}, stack: {sp_addr}, at block: {hex(self.block.addr)}")
+                else:
+                    l.critical(f"[STACK DBG] return to {hex(addr_int)}, stack: {sp_addr}, at block: {hex(self.block.addr)}")
+            else:
+                raise ValueError
+            """debug"""
     #
     # Private methods
     #
@@ -280,7 +299,7 @@ class SimEngineRDVEX(
         size: int = bits // self.arch.byte_width
 
         # FIXME: size, overlapping
-        data: Set[Union[Undefined,RegisterOffset,int]] = set()
+        data: Set[Union[Undefined,RegisterOffset,int,HeapAddress]] = set()
         current_defs: Iterable[Definition] = self.state.register_definitions.get_objects_by_offset(reg_offset)
         for current_def in current_defs:
             data.update(current_def.data)
@@ -393,10 +412,13 @@ class SimEngineRDVEX(
             elif isinstance(a, int):
                 mask = 2 ** bits - 1
                 a &= mask
-            elif isinstance(a, Register):
-                a.size = bits // 8
-            elif isinstance(a, SpOffset):
-                a.bits = bits
+            elif type(a) is Parameter:
+                if type(a.value) is Register:
+                    a.value.size = bits // 8
+                elif type(a.value) is SpOffset:
+                    a.value.bits = bits
+                else:
+                    l.warning('Unsupported type Parameter->%s for conversion.', type(a.value).__name__)
             else:
                 l.warning('Unsupported type %s for conversion.', type(a).__name__)
             data.add(a)

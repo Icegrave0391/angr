@@ -2,13 +2,14 @@ from typing import Dict, Tuple, Union
 
 from ...calling_conventions import SimFunctionArgument, SimRegArg
 from ...engines.light import SpOffset
+from .heap_address import HeapAddress
 
 
 class Atom:
     """
     This class represents a data storage location manipulated by IR instructions.
 
-    It could either be a Tmp (temporary variable), a Register, a MemoryLocation.
+    It could either be a Tmp (temporary variable), a Register, a MemoryLocation, or a Parameter.
     """
     def __repr__(self):
         raise NotImplementedError()
@@ -116,14 +117,14 @@ class MemoryLocation(Atom):
 
     __slots__ = ('addr', '_size')
 
-    def __init__(self, addr: Union[SpOffset,int], size: int):
+    def __init__(self, addr: Union[SpOffset,int,HeapAddress], size: int):
         """
         :param int addr: The address of the beginning memory location slice.
         :param int size: The size of the represented memory location, in bytes.
         """
         super(MemoryLocation, self).__init__()
 
-        self.addr: Union[SpOffset,int] = addr
+        self.addr: Union[SpOffset,int,HeapAddress] = addr
         self._size: int = size
 
     def __repr__(self):
@@ -141,6 +142,10 @@ class MemoryLocation(Atom):
         return isinstance(self.addr, SpOffset)
 
     @property
+    def is_on_heap(self) -> bool:
+        return isinstance(self.addr, HeapAddress)
+
+    @property
     def bits(self) -> int:
         return self.size * 8
 
@@ -154,6 +159,8 @@ class MemoryLocation(Atom):
             return False
         elif isinstance(self.addr, SpOffset):
             return not type(self.addr.offset) is int
+        elif isinstance(self.addr, HeapAddress):
+            return not type(self.addr.value) is int
         return True
 
     def __eq__(self, other):
@@ -163,3 +170,39 @@ class MemoryLocation(Atom):
 
     def __hash__(self):
         return hash(('mem', self.addr, self.size))
+
+
+class Parameter(Atom):
+    """
+    Represents a function parameter.
+
+    Can either be a <angr.engines.light.data.SpOffset> if the parameter was passed on the stack, or a <Register>, depending on the calling
+    convention.
+    """
+    __slots__ = ('value', '_size', 'type_', 'meta')
+
+    def __init__(self, value, size=None, type_=None, meta=None):
+        super(Parameter, self).__init__()
+
+        self.value = value
+        self._size = size
+        self.type_ = type_
+        self.meta = meta
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    def __repr__(self):
+        type_ = ', type=%s' % self.type_ if self.type_ is not None else ''
+        meta = ', meta=%s' % self.meta if self.meta is not None else ''
+        return '<Param %s%s%s>' % (self.value, type_, meta)
+
+    def __eq__(self, other):
+        return type(other) is Parameter and \
+               self.value == other.value and \
+               self.type_ == other.type_ and \
+               self.meta == other.meta
+
+    def __hash__(self):
+        return hash(('par', self.value, self.type_, self.meta))

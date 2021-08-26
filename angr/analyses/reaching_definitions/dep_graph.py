@@ -31,7 +31,7 @@ class DepGraph:
         """
         # Used for memoization of the `transitive_closure` method.
         self._transitive_closures: Dict = {}
-
+        self._transitive_successor_closures: Dict = {}
         if graph and not all(map(_is_definition, graph.nodes)):
             raise TypeError("In a DepGraph, nodes need to be <%s>s." % Definition.__name__)
 

@@ -152,7 +152,13 @@ class ReachingDefinitionsState:
         # initialize stack pointer
         sp = Register(self.arch.sp_offset, self.arch.bytes)
         sp_def = Definition(sp, ExternalCodeLocation(), DataSet(SpOffset(self.arch.bits, 0), self.arch.bits), tags={InitialValueTag()})
+        # initialize frame pointer (hackey way here)
+        # this way will induce the semantic gap between BP & SP
+        bp = Register(self.arch.bp_offset, self.arch.bytes)
+        bp_def = Definition(bp, ExternalCodeLocation(), DataSet(SpOffset(self.arch.bits, 0x1000), self.arch.bits), tags={InitialValueTag()})
+
         self.register_definitions.set_object(sp_def.offset, sp_def, sp_def.size)
+        self.register_definitions.set_object(bp_def.offset, bp_def, bp_def.size)
         if self.arch.name.startswith('MIPS'):
             if func_addr is None:
                 l.warning("func_addr must not be None to initialize a function in mips")
@@ -234,7 +240,7 @@ class ReachingDefinitionsState:
         """
 
         if data is None:
-            data = DataSet(UNDEFINED, atom.size)
+            data = DataSet(UNDEFINED, atom.size * 8)
 
         self.kill_and_add_definition(atom, code_loc, data, dummy=dummy, tags=tags)
 

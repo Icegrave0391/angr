@@ -31,6 +31,7 @@ class Subject:
             self._func_graph = func_graph
             self._type = SubjectType.Function
             self._visitor = FunctionGraphVisitor(content, func_graph)
+            self.addr = content.addr
         elif isinstance(content, (ailment.Block, Block)):
             self._type = SubjectType.Block
             self._visitor = SingleNodeGraphVisitor(content)

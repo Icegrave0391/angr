@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 from .uses import Uses
 from .live_definitions import LiveDefinitions
@@ -8,7 +8,7 @@ from .live_definitions import LiveDefinitions
 class ReachingDefinitionsModel:
     def __init__(self, func_addr: Optional[int]=None):
         self.func_addr = func_addr  # do not use. only for pretty-printing
-        self.observed_results: Dict[Tuple[str, int, int], LiveDefinitions] = {}
+        self.observed_results: Dict[Tuple[str, int, int], List[LiveDefinitions]] = {}
         self.all_definitions = set()
         self.all_uses = Uses()
 

@@ -77,8 +77,14 @@ class RegionObject:
 
     def split(self, split_at):
         assert self.includes(split_at)
-        a = RegionObject(self.start, split_at - self.start, self.stored_objects.copy())
-        b = RegionObject(split_at, self.start + self.size - split_at, self.stored_objects.copy())
+        # manipulate the size of stored_objects after split
+        a_stored_objects = set()
+        b_stored_objects = set()
+        for storedObj in self.stored_objects:
+            a_stored_objects.add(StoredObject(self.start, storedObj.obj, split_at - self.start))
+            b_stored_objects.add(StoredObject(split_at, storedObj.obj, self.start + self.size - split_at))
+        a = RegionObject(self.start, split_at - self.start, a_stored_objects)
+        b = RegionObject(split_at, self.start + self.size - split_at, b_stored_objects)
 
         return a, b
 
@@ -175,7 +181,7 @@ class KeyedRegion:
         kr._object_mapping = self._object_mapping.copy()
         return kr
 
-    def merge(self, other, replacements=None):
+    def merge(self, other, replacements=None, overwrite=False):
         """
         Merge another KeyedRegion into this KeyedRegion.
 
@@ -192,7 +198,7 @@ class KeyedRegion:
                 if replacements and so.obj in replacements:
                     so = StoredObject(so.start, replacements[so.obj], so.size)
                 self._object_mapping[so.obj_id] = so
-                self.__store(so, overwrite=False)
+                self.__store(so, overwrite=overwrite)
 
         return self
 

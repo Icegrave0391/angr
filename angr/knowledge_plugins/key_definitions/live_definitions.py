@@ -90,16 +90,16 @@ class LiveDefinitions:
 
         return first_value
 
-    def merge(self, *others):
+    def merge(self, *others, overwrite=False):
 
         state = self.copy()
 
         for other in others:
             other: LiveDefinitions
-            state.register_definitions.merge(other.register_definitions)
-            state.stack_definitions.merge(other.stack_definitions)
-            state.heap_definitions.merge(other.heap_definitions)
-            state.memory_definitions.merge(other.memory_definitions)
+            state.register_definitions.merge(other.register_definitions, overwrite=overwrite)
+            state.stack_definitions.merge(other.stack_definitions, overwrite=overwrite)
+            state.heap_definitions.merge(other.heap_definitions, overwrite=overwrite)
+            state.memory_definitions.merge(other.memory_definitions, overwrite=overwrite)
 
             state.register_uses.merge(other.register_uses)
             state.stack_uses.merge(other.stack_uses)
@@ -131,6 +131,8 @@ class LiveDefinitions:
             self.register_definitions.set_object(atom.reg_offset, definition, atom.size)
         elif isinstance(atom, MemoryLocation):
             if isinstance(atom.addr, SpOffset):
+                # handle the overlap region manually
+                # since the storedObject in KeyRegion has not been compatible with Definition
                 self.stack_definitions.set_object(atom.addr.offset, definition, atom.size)
             elif isinstance(atom.addr, HeapAddress):
                 self.heap_definitions.set_object(atom.addr.value, definition, atom.size)
